@@ -73,18 +73,25 @@ def server(input, output, session):
     current_size = reactive.value(0)
     file_counter = reactive.value(0)
     write_thread = reactive.value(None)
+    target_size_gb = reactive.value(0.1)  # Default value
+    chunk_size_mb = reactive.value(100)   # Default value
     
     @reactive.effect
     @reactive.event(input.start_write)
     def _():
         if not writing():
+            # Capture the current input values before starting the thread
+            target_size_gb.set(input.target_size())
+            chunk_size_mb.set(input.chunk_size())
+            
             # Reset if needed
             current_size.set(get_dir_size_gb(data_dir))
             writing.set(True)
             
             def write_task():
-                target_gb = input.target_size()
-                chunk_size_mb = input.chunk_size()
+                # Use the captured values instead of directly accessing input
+                target_gb = target_size_gb()
+                chunk_mb = chunk_size_mb()
                 
                 while writing() and current_size() < target_gb:
                     # Create a new file
@@ -94,7 +101,7 @@ def server(input, output, session):
                     
                     # Write data
                     try:
-                        write_chunk(file_path, chunk_size_mb, lambda: current_size.set(get_dir_size_gb(data_dir)))
+                        write_chunk(file_path, chunk_mb, lambda: current_size.set(get_dir_size_gb(data_dir)))
                         current_size.set(get_dir_size_gb(data_dir))
                     except Exception as e:
                         print(f"Error writing file: {e}")
@@ -140,7 +147,7 @@ def server(input, output, session):
     @render.text
     def status():
         size = current_size()
-        target = input.target_size()
+        target = target_size_gb()
         percent = min(100, (size / target) * 100) if target > 0 else 0
         
         status_text = "Writing in progress" if writing() else "Idle"
@@ -158,7 +165,7 @@ def server(input, output, session):
         
         # Get current values
         size = current_size()
-        target = input.target_size()
+        target = target_size_gb()
         
         # Create a simple progress bar
         fig, ax = plt.subplots(figsize=(8, 2))
