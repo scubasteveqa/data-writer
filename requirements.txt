@@ -1,3 +1,4 @@
 shiny
 matplotlib
 pandas
+jinja2
