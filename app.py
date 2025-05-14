@@ -5,6 +5,7 @@ import string
 import tempfile
 import threading
 import time
+import pandas as pd
 
 # Create a temporary directory to write files to
 data_dir = tempfile.mkdtemp()
@@ -187,20 +188,27 @@ def server(input, output, session):
     @render.table
     def file_list():
         # Get list of files in data directory
-        files = []
+        files_data = []
         for filename in os.listdir(data_dir):
             file_path = os.path.join(data_dir, filename)
             if os.path.isfile(file_path):
                 size_mb = os.path.getsize(file_path) / (1024 * 1024)
-                files.append({
+                files_data.append({
                     "Filename": filename,
                     "Size (MB)": f"{size_mb:.2f}"
                 })
         
-        # Sort by filename
-        files.sort(key=lambda x: x["Filename"])
+        # Convert to pandas DataFrame
+        df = pd.DataFrame(files_data)
         
-        # Return the most recent files (up to 10)
-        return files[-10:] if files else []
+        # Sort by filename
+        if not df.empty:
+            df = df.sort_values("Filename", ascending=False)
+            
+            # Return the most recent files (up to 10)
+            return df.head(10)
+        
+        # Return an empty DataFrame with the right columns if no files
+        return pd.DataFrame(columns=["Filename", "Size (MB)"])
 
 app = App(app_ui, server)
