@@ -68,46 +68,70 @@ app_ui = ui.page_sidebar(
 )
 
 def server(input, output, session):
-    # Shared state
-    writing = reactive.value(False)
+    # Shared state - use standard Python variables for thread communication
+    writing_flag = threading.Event()  # Use an Event for thread signaling
+    current_size_gb = [0]  # Use a list for mutable reference
+    files_created = [0]    # Use a list for mutable reference
+    target_gb = [0.1]      # Use a list for mutable reference
+    chunk_mb = [100]       # Use a list for mutable reference
+    
+    # Reactive values for UI updates
     current_size = reactive.value(0)
     file_counter = reactive.value(0)
+    target_size_gb = reactive.value(0.1)
+    chunk_size_mb = reactive.value(100)
     write_thread = reactive.value(None)
-    target_size_gb = reactive.value(0.1)  # Default value
-    chunk_size_mb = reactive.value(100)   # Default value
+    
+    # Function to update reactive values from thread data
+    def update_reactive_values():
+        current_size.set(current_size_gb[0])
+        file_counter.set(files_created[0])
     
     @reactive.effect
     @reactive.event(input.start_write)
     def _():
-        if not writing():
-            # Capture the current input values before starting the thread
-            target_size_gb.set(input.target_size())
-            chunk_size_mb.set(input.chunk_size())
+        if not writing_flag.is_set():
+            # Capture input values in regular Python variables
+            target_gb[0] = input.target_size()
+            chunk_mb[0] = input.chunk_size()
+            
+            # Update reactive values for UI consistency
+            target_size_gb.set(target_gb[0])
+            chunk_size_mb.set(chunk_mb[0])
             
             # Reset if needed
-            current_size.set(get_dir_size_gb(data_dir))
-            writing.set(True)
+            current_size_gb[0] = get_dir_size_gb(data_dir)
+            current_size.set(current_size_gb[0])
+            
+            # Set writing flag
+            writing_flag.set()
             
             def write_task():
-                # Use the captured values instead of directly accessing input
-                target_gb = target_size_gb()
-                chunk_mb = chunk_size_mb()
-                
-                while writing() and current_size() < target_gb:
+                # Use non-reactive variables
+                while writing_flag.is_set() and current_size_gb[0] < target_gb[0]:
                     # Create a new file
-                    file_id = file_counter() + 1
-                    file_counter.set(file_id)
-                    file_path = os.path.join(data_dir, f"data_chunk_{file_id}.dat")
+                    files_created[0] += 1
+                    file_path = os.path.join(data_dir, f"data_chunk_{files_created[0]}.dat")
                     
                     # Write data
                     try:
-                        write_chunk(file_path, chunk_mb, lambda: current_size.set(get_dir_size_gb(data_dir)))
-                        current_size.set(get_dir_size_gb(data_dir))
+                        def update_progress():
+                            current_size_gb[0] = get_dir_size_gb(data_dir)
+                            # Schedule a callback to update reactive values
+                            session.send_custom_message("update_values", {})
+                            
+                        write_chunk(file_path, chunk_mb[0], update_progress)
+                        current_size_gb[0] = get_dir_size_gb(data_dir)
+                        # Schedule a callback to update reactive values
+                        session.send_custom_message("update_values", {})
                     except Exception as e:
                         print(f"Error writing file: {e}")
                         break
                 
-                writing.set(False)
+                # Clear the writing flag when done
+                writing_flag.clear()
+                # Final update of reactive values
+                session.send_custom_message("update_values", {})
             
             # Start writing in a separate thread
             thread = threading.Thread(target=write_task)
@@ -115,21 +139,27 @@ def server(input, output, session):
             thread.start()
             write_thread.set(thread)
     
+    # Register message handler to update reactive values from the thread
+    @session.client.on("update_values")
+    def _handle_update_values(data):
+        update_reactive_values()
+    
     @reactive.effect
     @reactive.event(input.stop_write)
     def _():
-        writing.set(False)
-        # The thread will exit on its next iteration
+        # Clear the writing flag to signal thread to stop
+        writing_flag.clear()
     
     @reactive.effect
     @reactive.event(input.clear_data)
     def _():
         # Stop any ongoing writing
-        writing.set(False)
+        writing_flag.clear()
         
         # Wait for thread to finish if it's running
-        if write_thread() and write_thread().is_alive():
-            write_thread().join(1)  # Wait for up to 1 second
+        current_thread = write_thread()
+        if current_thread and current_thread.is_alive():
+            current_thread.join(1)  # Wait for up to 1 second
         
         # Clear all files
         for filename in os.listdir(data_dir):
@@ -141,8 +171,9 @@ def server(input, output, session):
                 print(f"Error deleting {file_path}: {e}")
         
         # Reset counters
-        file_counter.set(0)
-        current_size.set(0)
+        files_created[0] = 0
+        current_size_gb[0] = 0
+        update_reactive_values()
     
     @render.text
     def status():
@@ -150,7 +181,7 @@ def server(input, output, session):
         target = target_size_gb()
         percent = min(100, (size / target) * 100) if target > 0 else 0
         
-        status_text = "Writing in progress" if writing() else "Idle"
+        status_text = "Writing in progress" if writing_flag.is_set() else "Idle"
         return (
             f"Status: {status_text}\n"
             f"Current Size: {size:.2f} GB\n"
