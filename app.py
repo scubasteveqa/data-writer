@@ -64,6 +64,8 @@ app_ui = ui.page_sidebar(
         ui.card_header("File Details"),
         ui.output_table("file_list"),
     ),
+    # Hidden invalidation trigger for updating UI from thread
+    ui.input_action_button("_update_trigger", "Update", class_="shiny-hidden"),
     title="Disk Writer App"
 )
 
@@ -86,6 +88,12 @@ def server(input, output, session):
     def update_reactive_values():
         current_size.set(current_size_gb[0])
         file_counter.set(files_created[0])
+    
+    # Update reactive values whenever the hidden trigger is clicked
+    @reactive.effect
+    @reactive.event(input._update_trigger)
+    def _handle_update():
+        update_reactive_values()
     
     @reactive.effect
     @reactive.event(input.start_write)
@@ -117,13 +125,13 @@ def server(input, output, session):
                     try:
                         def update_progress():
                             current_size_gb[0] = get_dir_size_gb(data_dir)
-                            # Schedule a callback to update reactive values
-                            session.send_custom_message("update_values", {})
+                            # Trigger UI update by scheduling update button click
+                            session.set_input("_update_trigger", time.time())
                             
                         write_chunk(file_path, chunk_mb[0], update_progress)
                         current_size_gb[0] = get_dir_size_gb(data_dir)
-                        # Schedule a callback to update reactive values
-                        session.send_custom_message("update_values", {})
+                        # Trigger UI update
+                        session.set_input("_update_trigger", time.time())
                     except Exception as e:
                         print(f"Error writing file: {e}")
                         break
@@ -131,18 +139,13 @@ def server(input, output, session):
                 # Clear the writing flag when done
                 writing_flag.clear()
                 # Final update of reactive values
-                session.send_custom_message("update_values", {})
+                session.set_input("_update_trigger", time.time())
             
             # Start writing in a separate thread
             thread = threading.Thread(target=write_task)
             thread.daemon = True
             thread.start()
             write_thread.set(thread)
-    
-    # Register message handler to update reactive values from the thread
-    @session.client.on("update_values")
-    def _handle_update_values(data):
-        update_reactive_values()
     
     @reactive.effect
     @reactive.event(input.stop_write)
@@ -177,6 +180,9 @@ def server(input, output, session):
     
     @render.text
     def status():
+        # Force dependency on the update trigger
+        input._update_trigger()
+        
         size = current_size()
         target = target_size_gb()
         percent = min(100, (size / target) * 100) if target > 0 else 0
@@ -192,6 +198,9 @@ def server(input, output, session):
     
     @render.plot
     def progress_plot():
+        # Force dependency on the update trigger
+        input._update_trigger()
+        
         import matplotlib.pyplot as plt
         
         # Get current values
@@ -225,6 +234,9 @@ def server(input, output, session):
     
     @render.table
     def file_list():
+        # Force dependency on the update trigger
+        input._update_trigger()
+        
         # Get list of files in data directory
         files_data = []
         for filename in os.listdir(data_dir):
